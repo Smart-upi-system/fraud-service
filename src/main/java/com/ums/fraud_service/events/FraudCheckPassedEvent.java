@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Data
 @Builder
@@ -15,7 +16,7 @@ public class FraudCheckPassedEvent {
 
     private String eventId;
     private String eventType;
-    private String transactionId;
+    private UUID transactionId;
     private int riskScore;
     private String checkedBy;
     private LocalDateTime timestamp;
