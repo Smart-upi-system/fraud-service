@@ -22,7 +22,7 @@ public class TransactionEventConsumer {
     @KafkaListener(
             topics = "${spring.kafka.topics.fraud-events:fraud.events}",
             groupId = "${spring.kafka.consumer.fraud.group-id:transaction-service-fraud-group}",
-            containerFactory = "KafkaListenerFactory"
+            containerFactory = "kafkaListenerContainerFactory"
     )
     public void handleTransactionInitiated(TransactionInitiatedEvent event){
         log.info("Received TransactionInitiated event: transactionId={}, amount={}",
