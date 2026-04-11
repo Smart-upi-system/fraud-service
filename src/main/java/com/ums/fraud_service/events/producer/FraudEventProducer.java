@@ -22,7 +22,7 @@ public class FraudEventProducer {
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
-    @Value("${spring.kafka.topics.fraud-events:fraud.events}")
+    @Value("${spring.kafka.topics.fraud-results:fraud.results}")
     private String fraudEventsTopic;
 
 

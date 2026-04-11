@@ -20,46 +20,73 @@ public class TransactionEventConsumer {
     private final FraudEventProducer fraudEventProducer;
 
     @KafkaListener(
-            topics = "${spring.kafka.topics.fraud-events:fraud.events}",
+            topics = "${spring.kafka.topics.fraud-requests:fraud.requests}",
             groupId = "${spring.kafka.consumer.fraud.group-id:transaction-service-fraud-group}",
             containerFactory = "kafkaListenerContainerFactory"
     )
-    public void handleTransactionInitiated(TransactionInitiatedEvent event){
+    public void handleTransactionInitiated(TransactionInitiatedEvent event) {
+        // 1. CRITICAL: Filter to prevent infinite loop
+        // We only want to process events where a transaction is actually being initiated.
+        // Based on your logs, your producer sends 'FraudCheckPassed' or 'FraudCheckFailed'.
+        // We must ignore those types here.
+        if (event.getEventType() == null ||
+                !event.getEventType().equals("FraudCheckRequested")) {
+            log.debug("Skipping event type: {}", event.getEventType());
+            return;
+        }
+
+        // 2. Validate essential data
+        if (event.getTransactionId() == null) {
+            log.error("Received event with missing transactionId. Payload: {}", event);
+            return;
+        }
+
         log.info("Received TransactionInitiated event: transactionId={}, amount={}",
                 event.getTransactionId(), event.getAmount());
 
-            try{
+        try {
+            FraudCheckResult result = fraudDetectionService.analyzeTransaction(event);
 
-                FraudCheckResult result=fraudDetectionService.analyzeTransaction(event);
-                if(result.isFraudDetected()){
-                    log.warn("FRAUD DETECTED: transactionId={}, riskScore={}, reason={}",
-                            result.getTransactionId(), result.getRiskScore(), result.getReason());
-
-                    fraudEventProducer.publishFraudCheckFailed(event.getTransactionId(),result.getReason(),result.getRiskScore());
-                }
-                else{
-
-                    log.info("Transaction passed fraud check: transactionId={}, riskScore={}",
-                            result.getTransactionId(), result.getRiskScore());
-                    fraudEventProducer.publishFraudCheckPass(event.getTransactionId(),result.getRiskScore(),result.getCheckedBy());
-
-                }
-
-
-
-            } catch (RuntimeException e) {
-                log.error("Error processing transaction for fraud check: transactionId={}",
-                        event.getTransactionId(), e);
-                // For now: publish failure event
-                fraudEventProducer.publishFraudCheckFailed(event.getTransactionId(),
-                        "Fraud check system error: " + e.getMessage(), 100);
-
+            if (result == null) {
+                log.warn("Fraud check returned no result (likely already processed): transactionId={}",
+                        event.getTransactionId());
+                return;
             }
 
+            if (result.isFraudDetected()) {
+                log.warn("FRAUD DETECTED: transactionId={}, riskScore={}, reason={}",
+                        result.getTransactionId(), result.getRiskScore(), result.getReason());
 
+                fraudEventProducer.publishFraudCheckFailed(
+                        event.getTransactionId(),
+                        result.getReason(),
+                        result.getRiskScore()
+                );
+            } else {
+                log.info("Transaction passed fraud check: transactionId={}, riskScore={}",
+                        result.getTransactionId(), result.getRiskScore());
+
+                fraudEventProducer.publishFraudCheckPass(
+                        event.getTransactionId(),
+                        result.getRiskScore(),
+                        result.getCheckedBy()
+                );
+            }
+
+        } catch (Exception e) {
+            // Using a generic Exception catch here to ensure we don't crash the listener
+            // and to handle the 'Already Analyzed' scenario if your service throws it.
+            log.error("Error processing transaction for fraud check: transactionId={}. Error: {}",
+                    event.getTransactionId(), e.getMessage());
+
+            // Optional: Only publish failure if it's a real logic error, not a duplicate check
+            if (!e.getMessage().contains("already analyzed")) {
+                fraudEventProducer.publishFraudCheckFailed(
+                        event.getTransactionId(),
+                        "Fraud check system error: " + e.getMessage(),
+                        100
+                );
+            }
+        }
     }
-
-
-
-
 }
