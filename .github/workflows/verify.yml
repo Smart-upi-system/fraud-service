@@ -3,8 +3,7 @@ name: Fraud Service CI/CD
 on:
   push:
     branches:
-      - main
-      - develop
+      - '**'
   pull_request:
     branches:
       - main
@@ -39,6 +38,29 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      kafka:
+        image: apache/kafka:3.7.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        options: >-
+          --health-cmd "bash -c 'echo > /dev/tcp/localhost/9092'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 30s
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -49,6 +71,15 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
           cache: maven
+
+      - name: Debug service health
+        if: failure()
+        run: |
+          docker ps -a --format "table {{.Names}}\t{{.Status}}"
+          for c in $(docker ps -aqf "ancestor=apache/kafka:3.7.0"); do
+            echo "--- $c ---"
+            docker inspect --format='{{json .State.Health}}' "$c"
+          done
 
       - name: Build and verify with Maven
         run: mvn -B verify --file pom.xml
@@ -63,7 +94,6 @@ jobs:
           EUREKA_CLIENT_REGISTER_WITH_EUREKA: "false"
           EUREKA_CLIENT_FETCH_REGISTRY: "false"
           SPRING_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
-          SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
           SPRING_CLOUD_CONFIG_ENABLED: "false"
 
       - name: Upload JAR artifact
