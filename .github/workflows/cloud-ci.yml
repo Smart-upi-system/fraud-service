@@ -1,16 +1,23 @@
-name: Fraud Service CI/CD
+name: Cloud CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - '**'
+    branches: [ "main", "develop" ]
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
 
 jobs:
-  verify:
+  test:
     runs-on: ubuntu-latest
 
     services:
@@ -29,7 +36,7 @@ jobs:
           --health-retries 5
 
       redis:
-        image: redis:7
+        image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
@@ -72,37 +79,8 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Debug service health
-        if: failure()
-        run: |
-          docker ps -a --format "table {{.Names}}\t{{.Status}}"
-          for c in $(docker ps -aqf "ancestor=apache/kafka:3.7.0"); do
-            echo "--- $c ---"
-            docker inspect --format='{{json .State.Health}}' "$c"
-          done
-
-      - name: Configure Maven for GitHub Packages
-        run: |
-          mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml << 'EOF'
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-            xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
-                                https://maven.apache.org/xsd/settings-1.0.0.xsd">
-            <servers>
-              <server>
-                <id>github</id>
-                <username>DarshThakur21</username>
-                <password>${{ secrets.GITHUB_TOKEN }}</password>
-              </server>
-            </servers>
-          </settings>
-          EOF
-
-
-
       - name: Build and verify with Maven
-        run: mvn -B clean verify --file pom.xml -DskipTests=false
+        run: mvn -B clean verify --file pom.xml
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/fraud_db
           SPRING_DATASOURCE_USERNAME: root
@@ -115,19 +93,17 @@ jobs:
           EUREKA_CLIENT_FETCH_REGISTRY: "false"
           SPRING_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           SPRING_CLOUD_CONFIG_ENABLED: "false"
-          WATCHLOG_URL: http://localhost:7000
-          WATCHLOG_SERVICE_ID: 00000000-0000-0000-0000-000000000000
 
       - name: Upload JAR artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: fraud-service-jar
+          name: service-jar
           path: target/*.jar
           retention-days: 1
 
   build-and-push:
-    needs: verify
+    needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -142,7 +118,7 @@ jobs:
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
         with:
-          name: fraud-service-jar
+          name: service-jar
           path: target
 
       - name: Bump version and create tag
@@ -152,21 +128,48 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           default_bump: patch
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push Docker image
+      - name: Build and push multi-arch Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            darshthakur/fraud-service:latest
-            darshthakur/fraud-service:${{ steps.tag_version.outputs.new_tag }}
-            darshthakur/fraud-service:${{ github.sha }}
-          build-args: |
-            # Adjust if your JAR name differs
-            JAR_FILE=target/fraud-service-0.0.1-SNAPSHOT.jar
+            ${{ secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}:${{ steps.tag_version.outputs.new_tag }}
+            ${{ secrets.DOCKER_USERNAME }}/${{ github.event.repository.name }}:${{ github.sha }}
+
+      - name: Deploy to cloud server (if configured)
+        if: vars.CLOUD_HOST != ''
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.CLOUD_HOST }}
+          username: ${{ secrets.CLOUD_USERNAME }}
+          key: ${{ secrets.CLOUD_SSH_KEY }}
+          script: |
+            cd /opt/upi-wallet-infra
+            docker compose pull ${{ github.event.repository.name }} || true
+            docker compose up -d --no-deps ${{ github.event.repository.name }}
+            sleep 10
+            docker compose ps ${{ github.event.repository.name }}
+        continue-on-error: true
+
+      - name: Dispatch Deployment Event to Infra Repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DEPLOY_PAT_TOKEN }}
+          repository: Smart-upi-system/upi-wallet-infra-compose
+          event-type: service-updated
+          client-payload: '{"service": "${{ github.event.repository.name }}", "version": "${{ steps.tag_version.outputs.new_tag }}"}'
