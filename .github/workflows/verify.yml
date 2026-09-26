@@ -21,7 +21,7 @@ jobs:
           POSTGRES_PASSWORD: root
           POSTGRES_DB: fraud_db
         ports:
-          - 5436:5432
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -81,10 +81,30 @@ jobs:
             docker inspect --format='{{json .State.Health}}' "$c"
           done
 
+      - name: Configure Maven for GitHub Packages
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'EOF'
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                                https://maven.apache.org/xsd/settings-1.0.0.xsd">
+            <servers>
+              <server>
+                <id>github</id>
+                <username>DarshThakur21</username>
+                <password>${{ secrets.GITHUB_TOKEN }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+
+
       - name: Build and verify with Maven
-        run: mvn -B verify --file pom.xml
+        run: mvn -B clean verify --file pom.xml -DskipTests=false
         env:
-          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5436/fraud_db
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/fraud_db
           SPRING_DATASOURCE_USERNAME: root
           SPRING_DATASOURCE_PASSWORD: root
           SPRING_DATA_REDIS_HOST: localhost
@@ -95,6 +115,8 @@ jobs:
           EUREKA_CLIENT_FETCH_REGISTRY: "false"
           SPRING_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           SPRING_CLOUD_CONFIG_ENABLED: "false"
+          WATCHLOG_URL: http://localhost:7000
+          WATCHLOG_SERVICE_ID: 00000000-0000-0000-0000-000000000000
 
       - name: Upload JAR artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
